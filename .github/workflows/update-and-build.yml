@@ -1,0 +1,63 @@
+name: Build container image on new release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  check-new-release:
+    name: Check for new release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch latest release version from upstream
+        run: curl -sL https://api.github.com/repos/jacksontj/promxy/releases/latest | jq -r '.tag_name' > release-latest-tag_name
+      - name: Check for change in release tag
+        id: release-tag
+        run: |
+          echo ::set-output name=has-changed::$([ -z "`git status --porcelain`" ] && echo "false" || echo "true")
+          echo ::set-output name=version::$(cat release-latest-tag_name)
+      - name: Commit latest release version
+        if: steps.release-tag.outputs.has-changed == 'true'
+        run: |
+          git config user.name 'Dominik Keil'
+          git config user.email 'dominik.keil@demicon.de'
+          git commit -am "New upstream release version"
+          git push
+    outputs:
+      has-new-release: ${{ steps.release-tag.outputs.has-changed }}
+      release-version: ${{ steps.release-tag.outputs.version }}
+          
+  build-and-push-image:
+    name: Build new docker image and push to github registry
+    needs: check-new-release
+    if: needs.check-new-release.outputs.has-new-release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout promxy repository
+        uses: actions/checkout@v3
+        with:
+          repository: jacksontj/promxy
+          ref: refs/tags/${{ needs.check-new-release.outputs.release-version }}
+          path: promxy
+        
+      - name: Log in to the Container registry
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: promxy
+          push: true
+          tags: ghcr.io/demicon-gmbh/promxy:latest,ghcr.io/demicon-gmbh/promxy:${{ needs.check-new-release.outputs.release-version }}
